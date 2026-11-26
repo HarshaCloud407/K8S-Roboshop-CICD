@@ -6,7 +6,7 @@ metadata:
   # these labels are replicaset labels
   labels:
     project: roboshop
-    tier: db
+    tier: db 
     component: mysql
 spec:
   replicas: 1
