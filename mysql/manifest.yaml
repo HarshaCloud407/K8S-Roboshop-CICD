@@ -5,7 +5,7 @@ metadata:
   namespace: roboshop
   # these labels are replicaset labels
   labels:
-    project: roboshop
+    project: roboshop 
     tier: db 
     component: mysql
 spec:
