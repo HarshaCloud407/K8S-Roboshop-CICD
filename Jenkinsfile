@@ -4,7 +4,15 @@ pipeline {
     options {
         timestamps()
         disableConcurrentBuilds()
-        timeout(time: 40, unit: 'MINUTES')
+        timeout(time: 60, unit: 'MINUTES')
+    }
+
+    parameters {
+        booleanParam(name: 'RUN_SONAR',    defaultValue: true,  description: 'Run SonarQube analysis')
+        booleanParam(name: 'WAIT_QG',      defaultValue: true,  description: 'Check the Sonar Quality Gate for every service')
+        booleanParam(name: 'QG_ABORT',     defaultValue: false, description: 'Fail the build if any Quality Gate fails (off = only report)')
+        booleanParam(name: 'TRIVY_SCAN',   defaultValue: true,  description: 'Scan images with Trivy')
+        booleanParam(name: 'FAIL_ON_VULN', defaultValue: false, description: 'Fail the build on HIGH/CRITICAL vulnerabilities')
     }
 
     environment {
@@ -14,6 +22,8 @@ pipeline {
         K8S_NAMESPACE = 'roboshop'
         SERVICES      = 'catalogue user cart shipping payment frontend'
         DB_SERVICES   = 'mongodb redis mysql rabbitmq'
+        SONAR_SERVER  = 'sonarqube'       // CHANGE: name under Manage Jenkins > System > SonarQube servers
+        SONAR_TOOL    = 'sonar-scanner'   // CHANGE: name under Manage Jenkins > Tools > SonarQube Scanner
     }
 
     stages {
@@ -35,9 +45,84 @@ pipeline {
                 sh '''#!/bin/bash
                     echo "Services: [$SERVICES]"
                     [ -n "$SERVICES" ] || { echo "ERROR: SERVICES is empty"; exit 1; }
-                    echo "---- files in repo ----"
                     find . -path ./.git -prune -o -type f -print | sort
                 '''
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            when { expression { params.RUN_SONAR } }
+            steps {
+                script {
+                    def scannerHome = tool env.SONAR_TOOL
+                    withSonarQubeEnv(installationName: env.SONAR_SERVER, credentialsId: 'sonar-token') {
+                        withEnv(["SCANNER_HOME=${scannerHome}"]) {
+                            sh '''#!/bin/bash
+                                set -e
+                                for s in $SERVICES; do
+                                    df=$(find . -path ./.git -prune -o -type f -path "*/$s/Dockerfile" -print | head -1)
+                                    [ -n "$df" ] || { echo "ERROR: no folder found for $s"; exit 1; }
+                                    dir=$(dirname "$df")
+                                    echo "Sonar scan: $s ($dir)"
+                                    (cd "$dir" && $SCANNER_HOME/bin/sonar-scanner \
+                                        -Dsonar.projectKey=roboshop-$s \
+                                        -Dsonar.projectName=roboshop-$s \
+                                        -Dsonar.sources=. \
+                                        -Dsonar.java.binaries=. \
+                                        -Dsonar.exclusions=**/node_modules/**,**/target/**,**/*.yaml)
+                                done
+                            '''
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Quality Gate') {
+            when { expression { params.RUN_SONAR && params.WAIT_QG } }
+            steps {
+                script {
+                    withSonarQubeEnv(installationName: env.SONAR_SERVER, credentialsId: 'sonar-token') {
+                        withEnv(["QG_ABORT=${params.QG_ABORT}"]) {
+                            sh '''#!/bin/bash
+                                failed=0
+                                for s in $SERVICES; do
+                                    df=$(find . -path ./.git -prune -o -type f -path "*/$s/Dockerfile" -print | head -1)
+                                    dir=$(dirname "$df")
+                                    rt="$dir/.scannerwork/report-task.txt"
+                                    if [ ! -f "$rt" ]; then
+                                        echo "$s : no Sonar report found"; failed=1; continue
+                                    fi
+                                    ce_url=$(grep '^ceTaskUrl=' "$rt" | cut -d= -f2-)
+
+                                    # wait for SonarQube to finish processing the analysis (max 5 min)
+                                    for i in $(seq 1 60); do
+                                        task=$(curl -s -u "$SONAR_AUTH_TOKEN:" "$ce_url")
+                                        st=$(echo "$task" | grep -o '"status":"[A-Z_]*"' | head -1 | cut -d'"' -f4)
+                                        [ "$st" = "SUCCESS" ] || [ "$st" = "FAILED" ] || [ "$st" = "CANCELED" ] && break
+                                        sleep 5
+                                    done
+
+                                    aid=$(echo "$task" | grep -o '"analysisId":"[^"]*"' | cut -d'"' -f4)
+                                    if [ -z "$aid" ]; then
+                                        echo "$s : analysis did not complete (task status: $st)"; failed=1; continue
+                                    fi
+
+                                    res=$(curl -s -u "$SONAR_AUTH_TOKEN:" "$SONAR_HOST_URL/api/qualitygates/project_status?analysisId=$aid")
+                                    gs=$(echo "$res" | grep -o '"status":"[A-Z_]*"' | head -1 | cut -d'"' -f4)
+                                    echo "Quality Gate  $s : $gs   ($SONAR_HOST_URL/dashboard?id=roboshop-$s)"
+                                    [ "$gs" = "OK" ] || failed=1
+                                done
+
+                                if [ $failed -eq 1 ]; then
+                                    echo "One or more Quality Gates did not pass"
+                                    [ "$QG_ABORT" = "true" ] && exit 1
+                                fi
+                                exit 0
+                            '''
+                        }
+                    }
+                }
             }
         }
 
@@ -52,6 +137,29 @@ pipeline {
                         docker build -t $DOCKER_USER/$s:$IMAGE_TAG "$(dirname "$df")"
                     done
                 '''
+            }
+        }
+
+        stage('Trivy Image Scan') {
+            when { expression { params.TRIVY_SCAN } }
+            steps {
+                script {
+                    withEnv(["TRIVY_EXIT=${params.FAIL_ON_VULN ? '1' : '0'}"]) {
+                        sh '''#!/bin/bash
+                            command -v trivy >/dev/null || { echo "ERROR: trivy is not installed on this Jenkins server"; exit 1; }
+                            rc=0
+                            for s in $SERVICES; do
+                                echo "=========== Trivy: $s ==========="
+                                trivy image --no-progress --severity HIGH,CRITICAL \
+                                    --exit-code $TRIVY_EXIT --format table \
+                                    -o trivy-$s-$BUILD_NUMBER.txt \
+                                    $DOCKER_USER/$s:$IMAGE_TAG || rc=1
+                                cat trivy-$s-$BUILD_NUMBER.txt
+                            done
+                            exit $rc
+                        '''
+                    }
+                }
             }
         }
 
@@ -84,7 +192,6 @@ pipeline {
                             find . -path ./.git -prune -o -type f -path "*/$1/manifest.yaml" -print | head -1
                         }
 
-                        # namespace: use the yaml if it exists, otherwise create it
                         ns=$(find . -path ./.git -prune -o -type f -name '*namespace*.yaml' -print | head -1)
                         if [ -n "$ns" ]; then
                             kubectl apply -f "$ns"
@@ -92,21 +199,18 @@ pipeline {
                             kubectl get ns $K8S_NAMESPACE >/dev/null 2>&1 || kubectl create ns $K8S_NAMESPACE
                         fi
 
-                        # databases / queue: apply as-is
                         for s in $DB_SERVICES; do
                             m=$(find_manifest $s)
                             [ -n "$m" ] || { echo "ERROR: no manifest.yaml for $s"; exit 1; }
                             kubectl apply -f "$m"
                         done
 
-                        # app services: patch the new image tag, then apply
                         for s in $SERVICES; do
                             m=$(find_manifest $s)
                             [ -n "$m" ] || { echo "ERROR: no manifest.yaml for $s"; exit 1; }
                             sed "s|image:.*|image: $DOCKER_USER/$s:$IMAGE_TAG|" "$m" | kubectl apply -f -
                         done
 
-                        # wait for rollouts, roll back on failure
                         for s in $SERVICES; do
                             kubectl rollout status deployment/$s -n $K8S_NAMESPACE --timeout=300s || {
                                 kubectl rollout undo deployment/$s -n $K8S_NAMESPACE
@@ -123,6 +227,7 @@ pipeline {
 
     post {
         always {
+            archiveArtifacts artifacts: 'trivy-*.txt', allowEmptyArchive: true
             sh '''#!/bin/bash
                 for s in $SERVICES; do docker rmi $DOCKER_USER/$s:$IMAGE_TAG || true; done
                 rm -f kubeconfig-* || true
