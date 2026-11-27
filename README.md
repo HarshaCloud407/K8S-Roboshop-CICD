@@ -1,4 +1,4 @@
-# ---------- 1. Prerequisites ----------
+# Prerequisites
 1. Ubuntu Servers --- 2 ( 2cpu min & Volumes are min 25GB)  
 
 2. IAM Role Create With AdminFullAcess.
@@ -11,7 +11,7 @@ sudo apt update && sudo apt upgrade -y
 sudo apt install -y curl unzip wget tar gnupg apt-transport-https ca-certificates
 ```
 
-# ---------- 2. AWS CLI v2 ----------
+# AWS CLI - INSTALL
 # Download, unzip, and install the AWS command-line tool
 ```
 curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
@@ -19,9 +19,8 @@ unzip awscliv2.zip
 sudo ./aws/install
 aws --version
 ```
-# ---------- 3. AWS credentials ----------
+# AWS credentials 
 # Asks for your Access Key, Secret Key, region, and output format
-aws configure set region "$REGION"
 ```
 aws configure
 ```
@@ -30,7 +29,7 @@ aws configure
 aws sts get-caller-identity
 ```
 
-# ---------- 4. kubectl ----------
+# kubectl 
 # Download the latest stable kubectl and put it in /usr/local/bin
 ```
 ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
@@ -41,14 +40,14 @@ sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
 kubectl version --client
 ```
 
-# ---------- 5. eksctl ----------
+# eksctl 
 # Download eksctl (the tool that creates EKS clusters) and install it
 ```
 ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
 curl -fsSL "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_$(uname -s)_${ARCH}.tar.gz" | tar xz -C /tmp
 sudo mv /tmp/eksctl /usr/local/bin
 ```
-# ---------- 6. Create the cluster ----------
+# Create the cluster 
 # Builds a managed EKS cluster with 2-4 worker nodes (takes ~15-20 minutes)
 ```
 eksctl create cluster \
@@ -62,28 +61,28 @@ eksctl create cluster \
   --nodes-max 4 \
   --managed
 ```
-# ---------- 7. Verify ----------
+# EKS-Cluster-Verify 
 ```
 kubectl get nodes -o wide     # worker nodes and their status
 kubectl get pods -A           # all pods in all namespaces
 kubectl cluster-info          # cluster endpoint info
 ```
 
-# ---------- 8. Delete-EKS Cluster --------
+# Delete-EKS Cluster 
 ```
 eksctl delete cluster --name my-eks-cluster --region ap-southeast-2
 ```
 
 ----------------------------------------------------------------------------------------------------------
 
-# ---------- 1. Prerequisites ----------
+# 1.Docker-Installation 
 # Update package list and install tools needed to add Docker's repository
 ```
 sudo apt update
 sudo apt install -y ca-certificates curl gnupg
 ```
 
-# ---------- 2. Add Docker's official repository ----------
+# 2. Add Docker's official repository
 # Create the keyring folder and download Docker's signing key
 ```
 sudo install -m 0755 -d /etc/apt/keyrings
@@ -96,7 +95,7 @@ echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.
 https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" \
 | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
 ```
-# ---------- 3. Install Docker ----------
+# 3. Install Docker 
 ```
 sudo apt update
 sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
@@ -107,7 +106,7 @@ sudo usermod -aG docker ubuntu
 
 docker --version
 ```
-# ---------- 4. Run SonarQube ----------
+# SonarQube - Installation
 # Code-quality tool, available at http://<server-ip>:9000 (default login: admin / admin)
 ```
 sudo docker run -d --name sonar \
@@ -115,7 +114,7 @@ sudo docker run -d --name sonar \
   -p 9000:9000 \
   sonarqube:lts-community
 ```
-# ---------- 5. Run Nexus ----------
+# Nexus - Installation
 # Artifact repository, available at http://<server-ip>:8081
 # Data is kept in the "nexus_data" volume so it survives container removal
 ```
@@ -127,7 +126,7 @@ sudo docker run -d --name nexus \
   sonatype/nexus3:latest
 ```
 
-# ---------- 6. Get the Nexus admin password ----------
+# Nexus admin password 
 ```
 sudo docker exec nexus cat /nexus-data/admin.password
 ```
