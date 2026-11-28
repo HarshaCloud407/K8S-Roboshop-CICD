@@ -138,7 +138,7 @@ sudo docker run -d --name sonar \
   sonarqube:lts-community
 ```
 ------------------------------------------------------------------------------------------
-# ------------ Jenkins-install- Process --------------------------------------------------
+# Jenkins-install- Process
 
 Jenkins Installation on Ubuntu 24.04 (End to End)
 1. Update the system
@@ -208,7 +208,7 @@ sudo -u jenkins aws --version
 sudo -u jenkins kubectl version --client
 
 ```
-===========trivy-installation-------------------------
+# Trivy-installation
 
 Option 1: apt repository (recommended)
 
