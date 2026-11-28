@@ -28,6 +28,12 @@ Below is the communication between components and dependency. This dependency co
 
 3. SecurityGroup with ALLTCP
 
+# Jenkins-Plugins
+1. AWS Credentials
+2. Docker Plugins
+3. Sonarqube Plugin
+4. Pipeline Stage View
+    
 # Update the system and install the basic tools needed below
 ```
 sudo apt update && sudo apt upgrade -y
