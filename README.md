@@ -137,22 +137,6 @@ sudo docker run -d --name sonar \
   -p 9000:9000 \
   sonarqube:lts-community
 ```
-# Nexus - Installation
-# Artifact repository, available at http://<server-ip>:8081
-# Data is kept in the "nexus_data" volume so it survives container removal
-```
-sudo docker run -d --name nexus \
-  --restart unless-stopped \
-  -p 8081:8081 \
-  -e INSTALL4J_ADD_VM_PARAMS="-Xms512m -Xmx1g -XX:MaxDirectMemorySize=1g" \
-  -v nexus_data:/nexus-data \
-  sonatype/nexus3:latest
-```
-
-# Nexus admin password 
-```
-sudo docker exec nexus cat /nexus-data/admin.password
-```
 ------------------------------------------------------------------------------------------
 # ------------ Jenkins-install- Process --------------------------------------------------
 
