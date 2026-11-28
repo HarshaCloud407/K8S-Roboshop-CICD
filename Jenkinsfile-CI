@@ -14,7 +14,7 @@ pipeline {
         ALL_SERVICES  = 'catalogue user cart shipping payment frontend'
 
         // Must match names configured in Jenkins (case-sensitive)
-        SONAR_SERVER  = 'sonarqube'        // Manage Jenkins > System > SonarQube servers > Name
+        SONAR_SERVER  = 'SonarQube'        // Manage Jenkins > System > SonarQube servers > Name
         SONAR_SCANNER = 'sonar-scanner'    // Manage Jenkins > Tools > SonarQube Scanner > Name
         DOCKER_CREDS  = 'dockerhub-creds'  // Username with password credential ID
     }
