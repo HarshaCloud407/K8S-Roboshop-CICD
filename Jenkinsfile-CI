@@ -5,7 +5,7 @@ pipeline {
         timestamps()
         disableConcurrentBuilds()
         timeout(time: 60, unit: 'MINUTES')
-    }
+    } 
 
     parameters {
         booleanParam(name: 'RUN_SONAR',    defaultValue: true,  description: 'Run SonarQube analysis')
