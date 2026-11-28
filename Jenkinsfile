@@ -22,7 +22,7 @@ pipeline {
         K8S_NAMESPACE = 'roboshop'
         SERVICES      = 'catalogue user cart shipping payment frontend'
         DB_SERVICES   = 'mongodb redis mysql rabbitmq'
-        SONAR_SERVER  = 'sonarqube'       // CHANGE: name under Manage Jenkins > System > SonarQube servers
+        SONAR_SERVER  = 'SonarQube'       // CHANGE: name under Manage Jenkins > System > SonarQube servers
         SONAR_TOOL    = 'sonar-scanner'   // CHANGE: name under Manage Jenkins > Tools > SonarQube Scanner
     }
 
