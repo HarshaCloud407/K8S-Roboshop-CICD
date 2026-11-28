@@ -74,8 +74,15 @@ kubectl version --client
 # Download eksctl (the tool that creates EKS clusters) and install it
 ```
 ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
-curl -fsSL "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_$(uname -s)_${ARCH}.tar.gz" | tar xz -C /tmp
-sudo mv /tmp/eksctl /usr/local/bin
+PLATFORM=$(uname -s)_$ARCH
+
+curl -fsSLO "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_${PLATFORM}.tar.gz"
+tar -xzf "eksctl_${PLATFORM}.tar.gz" -C /tmp
+rm "eksctl_${PLATFORM}.tar.gz"
+
+sudo mv /tmp/eksctl /usr/local/bin/eksctl
+sudo chmod +x /usr/local/bin/eksctl
+
 eksctl version
 ```
 # Create the cluster 
