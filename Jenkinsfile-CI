@@ -3,222 +3,147 @@ pipeline {
 
     options {
         timestamps()
+        timeout(time: 60, unit: 'MINUTES')
         disableConcurrentBuilds()
-        timeout(time: 60, unit: 'MINUTES') 
-    } 
-
-    parameters {
-        booleanParam(name: 'RUN_SONAR',    defaultValue: true,  description: 'Run SonarQube analysis')
-        booleanParam(name: 'WAIT_QG',      defaultValue: true,  description: 'Check the Sonar Quality Gate for every service')
-        booleanParam(name: 'QG_ABORT',     defaultValue: false, description: 'Fail the build if any Quality Gate fails (off = only report)')
-        booleanParam(name: 'TRIVY_SCAN',   defaultValue: true,  description: 'Scan images with Trivy')
-        booleanParam(name: 'FAIL_ON_VULN', defaultValue: false, description: 'Fail the build on HIGH/CRITICAL vulnerabilities')
+        buildDiscarder(logRotator(numToKeepStr: '10'))
     }
 
     environment {
         DOCKER_USER   = 'hariprasad123456'
-        AWS_REGION    = 'ap-southeast-2'
-        EKS_CLUSTER   = 'my-eks-cluster'
-        K8S_NAMESPACE = 'roboshop'
-        SERVICES      = 'catalogue user cart shipping payment frontend'
-        DB_SERVICES   = 'mongodb redis mysql rabbitmq'
-        SONAR_SERVER  = 'SonarQube'       // CHANGE: name under Manage Jenkins > System > SonarQube servers
-        SONAR_TOOL    = 'sonar-scanner'   // CHANGE: name under Manage Jenkins > Tools > SonarQube Scanner
+        APP_DIR       = 'roboshop-docker'
+        ALL_SERVICES  = 'catalogue user cart shipping payment frontend'
+
+        // Must match names configured in Jenkins (case-sensitive)
+        SONAR_SERVER  = 'sonarqube'        // Manage Jenkins > System > SonarQube servers > Name
+        SONAR_SCANNER = 'sonar-scanner'    // Manage Jenkins > Tools > SonarQube Scanner > Name
+        DOCKER_CREDS  = 'dockerhub-creds'  // Username with password credential ID
     }
 
     stages {
 
         stage('Checkout') {
             steps {
-                cleanWs()
-                git branch: 'main', url: 'https://github.com/HarshaCloud407/K8S-Roboshop-CICD.git'
+                checkout scm
                 script {
-                    def sha = sh(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
-                    env.IMAGE_TAG = "${env.BUILD_NUMBER}-${sha}"
+                    env.GIT_COMMIT_SHORT = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+                    env.IMAGE_TAG        = "${env.BUILD_NUMBER}-${env.GIT_COMMIT_SHORT}"
                     echo "Image tag: ${env.IMAGE_TAG}"
                 }
             }
         }
 
-        stage('Show Repo Layout') {
+        stage('Detect Changed Services') {
             steps {
-                sh '''#!/bin/bash
-                    echo "Services: [$SERVICES]"
-                    [ -n "$SERVICES" ] || { echo "ERROR: SERVICES is empty"; exit 1; }
-                    find . -path ./.git -prune -o -type f -print | sort
-                '''
+                script {
+                    // Files changed in the last commit (empty if there is no parent commit)
+                    def changed = sh(
+                        script: 'git diff --name-only HEAD~1 HEAD 2>/dev/null || true',
+                        returnStdout: true
+                    ).trim()
+
+                    def all = env.ALL_SERVICES.split(' ') as List
+                    def selected = []
+
+                    // First build, Jenkinsfile change, or unknown diff -> build everything
+                    if (!changed || changed.contains('Jenkinsfile')) {
+                        selected = all
+                    } else {
+                        all.each { svc ->
+                            if (changed.readLines().any { it.startsWith("${env.APP_DIR}/${svc}/") || it.startsWith("${svc}/") }) {
+                                selected << svc
+                            }
+                        }
+                    }
+
+                    env.CHANGED_SERVICES = selected.join(' ')
+                    echo "Services to build: ${env.CHANGED_SERVICES ?: 'none'}"
+                }
             }
         }
 
         stage('SonarQube Analysis') {
-            when { expression { params.RUN_SONAR } }
+            when { expression { env.CHANGED_SERVICES?.trim() } }
             steps {
                 script {
-                    def scannerHome = tool env.SONAR_TOOL
-                    withSonarQubeEnv(installationName: env.SONAR_SERVER, credentialsId: 'sonar-token') {
-                        withEnv(["SCANNER_HOME=${scannerHome}"]) {
-                            sh '''#!/bin/bash
-                                set -e
-                                for s in $SERVICES; do
-                                    df=$(find . -path ./.git -prune -o -type f -path "*/$s/Dockerfile" -print | head -1)
-                                    [ -n "$df" ] || { echo "ERROR: no folder found for $s"; exit 1; }
-                                    dir=$(dirname "$df")
-                                    echo "Sonar scan: $s ($dir)"
-                                    (cd "$dir" && $SCANNER_HOME/bin/sonar-scanner \
-                                        -Dsonar.projectKey=roboshop-$s \
-                                        -Dsonar.projectName=roboshop-$s \
-                                        -Dsonar.sources=. \
-                                        -Dsonar.java.binaries=. \
-                                        -Dsonar.exclusions=**/node_modules/**,**/target/**,**/*.yaml)
-                                done
-                            '''
-                        }
+                    def scannerHome = tool env.SONAR_SCANNER
+                    withSonarQubeEnv(env.SONAR_SERVER) {
+                        sh """
+                            ${scannerHome}/bin/sonar-scanner \
+                              -Dsonar.projectKey=roboshop \
+                              -Dsonar.projectName=roboshop \
+                              -Dsonar.sources=${env.APP_DIR} \
+                              -Dsonar.exclusions=**/node_modules/**,**/target/**,**/*.min.js \
+                              -Dsonar.java.binaries=.
+                        """
                     }
                 }
             }
         }
 
         stage('Quality Gate') {
-            when { expression { params.RUN_SONAR && params.WAIT_QG } }
+            when { expression { env.CHANGED_SERVICES?.trim() } }
             steps {
-                script {
-                    withSonarQubeEnv(installationName: env.SONAR_SERVER, credentialsId: 'sonar-token') {
-                        withEnv(["QG_ABORT=${params.QG_ABORT}"]) {
-                            sh '''#!/bin/bash
-                                failed=0
-                                for s in $SERVICES; do
-                                    df=$(find . -path ./.git -prune -o -type f -path "*/$s/Dockerfile" -print | head -1)
-                                    dir=$(dirname "$df")
-                                    rt="$dir/.scannerwork/report-task.txt"
-                                    if [ ! -f "$rt" ]; then
-                                        echo "$s : no Sonar report found"; failed=1; continue
-                                    fi
-                                    ce_url=$(grep '^ceTaskUrl=' "$rt" | cut -d= -f2-)
-
-                                    # wait for SonarQube to finish processing the analysis (max 5 min)
-                                    for i in $(seq 1 60); do
-                                        task=$(curl -s -u "$SONAR_AUTH_TOKEN:" "$ce_url")
-                                        st=$(echo "$task" | grep -o '"status":"[A-Z_]*"' | head -1 | cut -d'"' -f4)
-                                        [ "$st" = "SUCCESS" ] || [ "$st" = "FAILED" ] || [ "$st" = "CANCELED" ] && break
-                                        sleep 5
-                                    done
-
-                                    aid=$(echo "$task" | grep -o '"analysisId":"[^"]*"' | cut -d'"' -f4)
-                                    if [ -z "$aid" ]; then
-                                        echo "$s : analysis did not complete (task status: $st)"; failed=1; continue
-                                    fi
-
-                                    res=$(curl -s -u "$SONAR_AUTH_TOKEN:" "$SONAR_HOST_URL/api/qualitygates/project_status?analysisId=$aid")
-                                    gs=$(echo "$res" | grep -o '"status":"[A-Z_]*"' | head -1 | cut -d'"' -f4)
-                                    echo "Quality Gate  $s : $gs   ($SONAR_HOST_URL/dashboard?id=roboshop-$s)"
-                                    [ "$gs" = "OK" ] || failed=1
-                                done
-
-                                if [ $failed -eq 1 ]; then
-                                    echo "One or more Quality Gates did not pass"
-                                    [ "$QG_ABORT" = "true" ] && exit 1
-                                fi
-                                exit 0
-                            '''
-                        }
-                    }
+                // Needs SonarQube webhook: http://<jenkins-url>/sonarqube-webhook/
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
                 }
             }
         }
 
         stage('Docker Build') {
+            when { expression { env.CHANGED_SERVICES?.trim() } }
             steps {
                 sh '''#!/bin/bash
                     set -e
-                    for s in $SERVICES; do
-                        df=$(find . -path ./.git -prune -o -type f -path "*/$s/Dockerfile" -print | head -1)
-                        [ -n "$df" ] || { echo "ERROR: no Dockerfile found for $s"; exit 1; }
-                        echo "Building $s from $(dirname "$df")"
-                        docker build -t $DOCKER_USER/$s:$IMAGE_TAG "$(dirname "$df")"
+                    for svc in ${CHANGED_SERVICES}; do
+                        echo "=== Building ${DOCKER_USER}/${svc}:${IMAGE_TAG} ==="
+                        docker build \
+                            -t ${DOCKER_USER}/${svc}:${IMAGE_TAG} \
+                            -t ${DOCKER_USER}/${svc}:latest \
+                            ${APP_DIR}/${svc}
                     done
                 '''
             }
         }
 
         stage('Trivy Image Scan') {
-            when { expression { params.TRIVY_SCAN } }
+            when { expression { env.CHANGED_SERVICES?.trim() } }
             steps {
-                script {
-                    withEnv(["TRIVY_EXIT=${params.FAIL_ON_VULN ? '1' : '0'}"]) {
-                        sh '''#!/bin/bash
-                            command -v trivy >/dev/null || { echo "ERROR: trivy is not installed on this Jenkins server"; exit 1; }
-                            rc=0
-                            for s in $SERVICES; do
-                                echo "=========== Trivy: $s ==========="
-                                trivy image --no-progress --severity HIGH,CRITICAL \
-                                    --exit-code $TRIVY_EXIT --format table \
-                                    -o trivy-$s-$BUILD_NUMBER.txt \
-                                    $DOCKER_USER/$s:$IMAGE_TAG || rc=1
-                                cat trivy-$s-$BUILD_NUMBER.txt
-                            done
-                            exit $rc
-                        '''
-                    }
-                }
+                sh '''#!/bin/bash
+                    set -e
+                    mkdir -p trivy-reports
+                    for svc in ${CHANGED_SERVICES}; do
+                        echo "=== Trivy scan: ${svc} ==="
+                        # Report everything (does not fail)
+                        trivy image --no-progress --severity HIGH,CRITICAL --ignore-unfixed \
+                            --format table --exit-code 0 \
+                            --output trivy-reports/${svc}.txt \
+                            ${DOCKER_USER}/${svc}:${IMAGE_TAG}
+                        # Fail only on fixable CRITICAL vulnerabilities
+                        trivy image --no-progress --severity CRITICAL --ignore-unfixed \
+                            --exit-code 1 \
+                            ${DOCKER_USER}/${svc}:${IMAGE_TAG}
+                    done
+                '''
             }
         }
 
         stage('Docker Push') {
+            when { expression { env.CHANGED_SERVICES?.trim() } }
             steps {
-                withDockerRegistry(credentialsId: 'docker-cred', url: 'https://index.docker.io/v1/') {
+                withCredentials([usernamePassword(
+                    credentialsId: env.DOCKER_CREDS,
+                    usernameVariable: 'DH_USER',
+                    passwordVariable: 'DH_PASS'
+                )]) {
                     sh '''#!/bin/bash
                         set -e
-                        for s in $SERVICES; do
-                            docker push $DOCKER_USER/$s:$IMAGE_TAG
+                        echo "${DH_PASS}" | docker login -u "${DH_USER}" --password-stdin
+                        for svc in ${CHANGED_SERVICES}; do
+                            echo "=== Pushing ${DOCKER_USER}/${svc} ==="
+                            docker push ${DOCKER_USER}/${svc}:${IMAGE_TAG}
+                            docker push ${DOCKER_USER}/${svc}:latest
                         done
-                    '''
-                }
-            }
-        }
-
-        stage('Deploy to EKS') {
-            steps {
-                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding',
-                                  credentialsId: 'aws-cred',
-                                  accessKeyVariable: 'AWS_ACCESS_KEY_ID',
-                                  secretKeyVariable: 'AWS_SECRET_ACCESS_KEY']]) {
-                    sh '''#!/bin/bash
-                        set -e
-                        aws eks update-kubeconfig --region $AWS_REGION --name $EKS_CLUSTER \
-                            --kubeconfig kubeconfig-$BUILD_NUMBER
-                        export KUBECONFIG=$PWD/kubeconfig-$BUILD_NUMBER
-
-                        find_manifest() {
-                            find . -path ./.git -prune -o -type f -path "*/$1/manifest.yaml" -print | head -1
-                        }
-
-                        ns=$(find . -path ./.git -prune -o -type f -name '*namespace*.yaml' -print | head -1)
-                        if [ -n "$ns" ]; then
-                            kubectl apply -f "$ns"
-                        else
-                            kubectl get ns $K8S_NAMESPACE >/dev/null 2>&1 || kubectl create ns $K8S_NAMESPACE
-                        fi
-
-                        for s in $DB_SERVICES; do
-                            m=$(find_manifest $s)
-                            [ -n "$m" ] || { echo "ERROR: no manifest.yaml for $s"; exit 1; }
-                            kubectl apply -f "$m"
-                        done
-
-                        for s in $SERVICES; do
-                            m=$(find_manifest $s)
-                            [ -n "$m" ] || { echo "ERROR: no manifest.yaml for $s"; exit 1; }
-                            sed "s|image:.*|image: $DOCKER_USER/$s:$IMAGE_TAG|" "$m" | kubectl apply -f -
-                        done
-
-                        for s in $SERVICES; do
-                            kubectl rollout status deployment/$s -n $K8S_NAMESPACE --timeout=300s || {
-                                kubectl rollout undo deployment/$s -n $K8S_NAMESPACE
-                                exit 1
-                            }
-                        done
-
-                        kubectl get pods,svc -n $K8S_NAMESPACE
                     '''
                 }
             }
@@ -227,13 +152,21 @@ pipeline {
 
     post {
         always {
-            archiveArtifacts artifacts: 'trivy-*.txt', allowEmptyArchive: true
+            archiveArtifacts artifacts: 'trivy-reports/*.txt', allowEmptyArchive: true
             sh '''#!/bin/bash
-                for s in $SERVICES; do docker rmi $DOCKER_USER/$s:$IMAGE_TAG || true; done
-                rm -f kubeconfig-* || true
+                docker logout || true
+                for svc in ${CHANGED_SERVICES}; do
+                    docker rmi ${DOCKER_USER}/${svc}:${IMAGE_TAG} || true
+                    docker rmi ${DOCKER_USER}/${svc}:latest || true
+                done
+                docker image prune -f || true
             '''
         }
-        success { echo "Build ${BUILD_NUMBER} OK, image tag ${IMAGE_TAG}" }
-        failure { echo "Build ${BUILD_NUMBER} FAILED, check the failed stage log" }
+        success {
+            echo "Build ${env.BUILD_NUMBER} SUCCESS. Pushed tag: ${env.IMAGE_TAG}"
+        }
+        failure {
+            echo "Build ${env.BUILD_NUMBER} FAILED, check the failed stage log"
+        }
     }
 }
