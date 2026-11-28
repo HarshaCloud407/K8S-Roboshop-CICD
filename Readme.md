@@ -44,6 +44,7 @@ sudo apt install -y curl unzip wget tar gnupg apt-transport-https ca-certificate
 # Download, unzip, and install the AWS command-line tool
 ```
 curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+apt install unzip -y
 unzip awscliv2.zip
 sudo ./aws/install
 aws --version
